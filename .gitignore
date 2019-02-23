@@ -4,5 +4,5 @@
 *.Rhistory
 *.docx
 *.Rmd
-
-*.htm*
+*.odp
+*.html
