@@ -5,7 +5,7 @@ library(ROCR)
 library(caret)
 library(ggplot2)
 
-events <- fread("/home/vinzent/Documents/r_scrips/mytoys/20140415_Scoring_Modell_daten.csv", sep = ';')
+events <- fread("/home/vinzent/Documents/repos/dataenv/task_0/20140415_Scoring_Modell_daten.csv", sep = ';')
 
 summary(events)
 

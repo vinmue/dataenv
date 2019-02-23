@@ -4,7 +4,7 @@ library(ggplot2)
 
 # 1 data prep
 
-wd = "/home/vinzent/Documents/r_scrips/Babbel"
+wd = "/home/vinzent/Documents/repos/dataenv/task_1"
 setwd(wd)
 
 events = fread("challenge_data/learner_item_data.csv", sep = ',')

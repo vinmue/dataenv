@@ -1,7 +1,7 @@
 library(data.table)
 library(fasttime)
 
-wd = "/home/vinzent/Documents/r_scrips"
+wd = "/home/vinzent/Documents/repos/dataenv"
 setwd(wd)
 
 events = fread("tour-events.csv", sep = ',')
