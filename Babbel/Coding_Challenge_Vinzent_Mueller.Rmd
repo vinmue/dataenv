@@ -1,0 +1,182 @@
+---
+title: "Coding Challenge for Data Science Candidates at Babbel"
+author: "Vinzent Müller"
+date: "October 9, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(message=FALSE, 
+tidy.opts=list(width.cutoff=60)) 
+```
+
+
+
+## Task 1 - Preparing the data set
+
+Load libraries and the data set, set appropriate data types:
+
+```{r, message=FALSE}
+library(data.table)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+
+wd = "/home/vinzent/Documents/r_scrips/Babbel"
+setwd(wd)
+
+events = fread("challenge_data/learner_item_data.csv", sep = ',')
+
+events$uuid <- as.factor(events$uuid)
+events[, created_at := as.POSIXct(created_at)]
+events$trainer_item_id <- as.factor(events$trainer_item_id)
+```
+
+Sort the data set chronologically by user, then enumerate each user's activities:
+
+```{r}
+setkey(events, uuid, created_at)
+
+events[ , counter := 1:.N, by = .(uuid)]
+
+summary(events)
+```
+
+\pagebreak
+
+Now we add the closest preceeding timestamp. This is done as a self join using an offset counter. It works, but is a bit intransparent. Ideally to be done using CROSS APPLY when querying.
+
+```{r}
+times <- events[, -c("trainer_item_id")] # duplicate the table
+times$counter <- times$counter + 1
+
+# join
+events$preceeding_timestamp <- setDT(times)[events, created_at, on = .(uuid, counter)]
+
+rm(times)
+```
+
+We are now ready to identify the breaks between sessions. As with the single actions, an incrementing id is given to a user's sessions.
+
+```{r}
+events[, new_session_start := as.integer(difftime(created_at, preceeding_timestamp,
+                                                  units = "mins")) > 60]
+# fix first events
+events[is.na(new_session_start), new_session_start := FALSE]
+
+events[, session_id := cumsum(as.integer(ifelse(new_session_start == TRUE, 1, 0))),
+       by = .(uuid)]
+```
+
+Aggregate the starting time and duration of each session. Durations are rounded up to full minutes. As a last step, the group information is merged in.
+
+```{r}
+session_lengths <- events[, .(session_start = as.Date(min(created_at)),
+                              duration_min = as.integer(ceiling(difftime(max(created_at),
+                              min(created_at), units = "secs")/60))), by = .(session_id, uuid)]
+# fix single item sesions
+session_lengths[duration_min == 0, duration_min := 1]
+
+test_groups = fread("challenge_data/test_groups.csv", sep = ',',
+                    colClasses = c("chr", "factor"))
+
+session_lengths$group <- setDT(test_groups)[session_lengths, test_group, on = "uuid"]
+
+head(session_lengths)
+```
+
+\pagebreak
+
+## Task 2 - Basic Statistics
+
+### Histogram of durations
+
+The distribution of session durations is strongly skewed, short durations are prevalent. The median duration is `r median(session_lengths$duration_min)` minutes, the mean `r round(mean(session_lengths$duration_min), 0)` minutes.
+
+```{r fig.width=4.5, fig.height=3, warning = F, echo = F}
+ggplot(session_lengths, aes(session_lengths$duration_min)) + geom_histogram(, binwidth = 1, fill = "lightblue") + theme_bw() + scale_x_continuous(limits = c(0, 200)) + xlab("Session duration in minutes") + ylab("Sessions")
+```
+
+### Multiple daily sessions
+
+Per-user aggregation of her day with most sessions:
+
+```{r}
+daily_sessions <- session_lengths[, .(daily_sessions = uniqueN(session_id)),
+                    by = .(uuid, group, session_start)][, .(max_sessions = max(daily_sessions)),
+                        by = .(uuid, group)]
+#table(daily_sessions$group)
+```
+
+As in the A/B test definition: a user is counted as a multi session user if he has multiple sessions on at least one day.
+The histogram shows a high skewness again. Most people complete only one session per day.
+
+```{r fig.width=4.5, fig.height=3, warning = F, echo = F}
+ggplot(daily_sessions, aes(daily_sessions$max_sessions))+ geom_histogram(, binwidth = 1, fill = "lightblue") + theme_bw() + xlab("Session per day") + ylab("Users")
+```
+
+\pagebreak
+
+The figures for sessions per day are given below. Altogether `r round(uniqueN(daily_sessions[max_sessions > 1, uuid]) / uniqueN(daily_sessions$uuid) * 100, 2)`% of users have more than one daily session.
+
+```{r, echo = F}
+
+kable_styling(kable(table(daily_sessions$max_sessions > 1), col.names = c("Multiple Sessions", "Users")), font_size = 8, position = "left")
+
+kable_styling(kable(table(daily_sessions$max_sessions), col.names = c("Daily Sessions", "Users")), font_size = 8, position = "left")
+
+kable_styling(kable(round(prop.table(table(daily_sessions$max_sessions))* 100, 2),
+              col.names = c("Daily Sessions", "% Users")), font_size = 8, position = "left")
+
+```
+
+\pagebreak
+
+## Task 3 - A/B test evaluation
+
+For the two groups, calculate the metrics median duration and proportion of users with single sessions.
+
+```{r}
+stats_table <- session_lengths[, .(median_duration = median(duration_min)), by = group]
+
+stats_table <- cbind(stats_table,
+                     daily_sessions[, .(single_session = sum(ifelse(max_sessions == 1, 1, 0)),
+                     users = .N), by = group][ , -1])
+
+stats_table[, prop_single_session := round(single_session / users, 3)]
+```
+
+```{r, echo = F}
+kable(stats_table, col.names = c("Group", "Median Duration", "Single Session Users", "Users",  "Proportion single Session"))
+```
+
+There is no indication that the new feature improves the median session duration. To test this, in theory a Wilcoxon Rank Sum Test could be run. It is no direct comparison of medians, but may hint at differences between the groups without assuming normality of the data.
+
+The proportions of single session users are slightly different, but it seems unlikely that the difference will be significant, nor that that it constitutes the expected uplift. We perform a proportion test:
+
+```{r}
+prop.test(cbind(stats_table[ , single_session], stats_table[, users-single_session]),
+          alternative='greater')
+```
+
+Which shows that the difference is not significant.
+
+\pagebreak
+
+### Recommended actions
+
+* First of all, scrutinize the A/B test setup. What uplift was expected for both measures, what levels of significance were set? Was the N chosen right?
+
+* When plotting the distribution of durations we see that short duration sessions are a bit less common in the test group:
+
+```{r fig.width=4.5, fig.height=3, warning = F, echo = F}
+ggplot(session_lengths, aes(session_lengths$duration_min, color = group)) + geom_density() + theme_bw() + scale_x_continuous(limits = c(0, 60)) + xlab("Session duration in minutes")
+```
+
+This observation is of interest only if test power was not sufficient and the test period can be extended, or if the goal of the test is reformulated to detect differences exclusively in short duration sessions.
+
+* Another way to salvage the feature could be to look for positive effects besides the ones that were expected. For example, retention may have increased in the test group. This might be the topic of a follow-up analysis. Considering the resources invested into the development of the feature, all the possible changes in user behavior that are relevant to the business should be explored.
