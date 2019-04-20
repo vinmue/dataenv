@@ -7,3 +7,5 @@
 *.html
 *.json
 *.ipynb_checkpoints/*
+*.parq
+*-checkpoint.ipynb
